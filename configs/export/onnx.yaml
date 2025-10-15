@@ -1,0 +1,7 @@
+onnx:
+  opset: 13
+  dynamic_axes: false
+  simplify: true
+  check_model: true
+  include_qdq: true
+  output_path: "./runs/export/best.onnx"

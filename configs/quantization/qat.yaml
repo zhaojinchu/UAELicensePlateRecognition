@@ -1,0 +1,8 @@
+qat:
+  start_epoch_ratio: 0.7
+  observer: "histogram"
+  fake_quant: "learned_range"
+  per_channel: true
+  fuse_conv_bn_act: true
+  preserve_momentum: true
+  calibration_subset: "./data/calibration/qat_subset.txt"

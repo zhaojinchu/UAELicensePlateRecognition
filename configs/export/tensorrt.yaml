@@ -1,0 +1,8 @@
+tensorrt:
+  precision: "int8"
+  calibration_cache: "./data/calibration/uae_detector.cache"
+  engine_path: "./runs/export/best_int8.plan"
+  max_workspace_size_mb: 4096
+  use_ppa: false
+  builder_optimization_level: 3
+  dla_core: null

@@ -1,0 +1,9 @@
+model:
+  name: "yolov5n"
+  pretrained: true
+  num_classes: 1
+  anchors: "default"
+  input_channels: 3
+  quantization:
+    qat_supported: true
+    tensor_rt_friendly: true

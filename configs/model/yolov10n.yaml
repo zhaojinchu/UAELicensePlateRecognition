@@ -1,0 +1,9 @@
+model:
+  name: "yolov10n"
+  pretrained: true
+  num_classes: 1
+  nms_free: true
+  input_channels: 3
+  quantization:
+    qat_supported: true
+    tensor_rt_friendly: true

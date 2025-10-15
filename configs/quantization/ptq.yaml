@@ -1,0 +1,14 @@
+ptq:
+  calibration_images: "./data/calibration/list.txt"
+  num_images: 400
+  batch_size: 16
+  cache_file: "./data/calibration/uae_detector.cache"
+  dynamic_range_file: "./data/calibration/dynamic_ranges.json"
+  letterbox_size: [224, 224]
+  preprocessing:
+    normalize: true
+    color_space: "rgb"
+  tensorrt:
+    max_workspace_size_mb: 2048
+    int8: true
+    fp16_fallback: false

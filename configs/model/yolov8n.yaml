@@ -1,0 +1,13 @@
+model:
+  name: "yolov8n"
+  pretrained: true
+  num_classes: 1
+  input_channels: 3
+  max_stride: 32
+  export:
+    opset: 13
+    dynamic: false
+    simplify: true
+  quantization:
+    qat_supported: true
+    tensor_rt_friendly: true

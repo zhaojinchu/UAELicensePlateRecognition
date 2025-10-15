@@ -1,0 +1,28 @@
+[project]
+name = "uae-license-plate-detector"
+version = "0.1.0"
+description = "Research scaffolding for UAE license plate detector with INT8 deployment."
+authors = [{name = "UAELicensePlateResearch"}]
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "black",
+  "isort",
+  "mypy",
+  "pytest",
+]
+
+[tool.black]
+line-length = 100
+
+[tool.isort]
+profile = "black"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

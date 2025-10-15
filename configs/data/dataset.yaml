@@ -1,0 +1,39 @@
+dataset:
+  name: "uae_license_plate"
+  root: "./data/raw"
+  annotations: "./data/annotations/train.json"
+  cache_dir: "./data/processed/cache"
+  image_size: [224, 224]
+  letterbox: true
+  normalization:
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  augmentations:
+    geometric:
+      scale_range: [0.5, 1.5]
+      aspect_ratio: [0.9, 1.1]
+      translate: 0.1
+      rotation: 7.0
+      shear: 5.0
+      perspective: 0.02
+    photometric:
+      brightness: 0.2
+      contrast: 0.2
+      hsv_h: 5.0
+      hsv_s: 0.2
+      hsv_v: 0.2
+      color_temperature: 0.05
+    degradations:
+      motion_blur:
+        probability: 0.2
+        kernel: [3, 7]
+      gaussian_blur_sigma: 1.2
+      gaussian_noise_sigma: 0.01
+      jpeg_quality: [40, 90]
+      sharpening: 0.05
+    occlusion:
+      cutout:
+        patches: 3
+        max_size: 0.1
+      synthetic_shadows: true
+      edge_occlusion_probability: 0.1

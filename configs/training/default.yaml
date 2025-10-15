@@ -1,0 +1,46 @@
+experiment:
+  run_id: "detector_dev"
+  seed: 42
+  output_root: "./runs"
+  model_config: "./configs/model/yolov8n.yaml"
+  data_config: "./configs/data/dataset.yaml"
+
+trainer:
+  epochs: 120
+  amp: true
+  ema: true
+  grad_clip_norm: 1.0
+  qat_start_epoch: 84  # last 30% epochs
+
+optimizer:
+  name: "adamw"
+  lr_base: 0.002
+  weight_decay: 0.0005
+  betas: [0.9, 0.999]
+  lr_scale_reference_batch: 32
+
+lr_scheduler:
+  name: "cosine"
+  warmup_epochs: 3
+  final_lr_ratio: 0.1
+
+loss:
+  lambda_box: 2.0
+  lambda_l1: 1.0
+  lambda_cls: 1.0
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+
+logging:
+  use_tqdm: true
+  time_metrics: true
+  checkpoint_keep_topk: 3
+  metrics_fields: [
+    "map50",
+    "map5095",
+    "ap_small",
+    "precision",
+    "recall",
+    "f1",
+    "fps"
+  ]

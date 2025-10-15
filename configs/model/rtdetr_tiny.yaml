@@ -1,0 +1,11 @@
+model:
+  name: "rtdetr_tiny"
+  pretrained: true
+  num_classes: 1
+  backbone: "resnet18"
+  transformer_layers: 3
+  nms_free: true
+  quantization:
+    qat_required: true
+    tensor_rt_friendly: false
+    notes: "Requires careful layer fusion and memory planning for INT8."

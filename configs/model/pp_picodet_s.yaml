@@ -1,0 +1,9 @@
+model:
+  name: "pp_picodet_s"
+  pretrained: true
+  num_classes: 1
+  backbone: "pp_lcnet"
+  fpn: "lite_fpn"
+  quantization:
+    qat_supported: true
+    tensor_rt_friendly: true
