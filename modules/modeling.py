@@ -60,7 +60,11 @@ class ConvBNAct(nn.Sequential):
         )
 
     def fuse_model(self) -> None:
-        torch.ao.quantization.fuse_modules(self, [["conv", "bn", "act"]], inplace=True)
+        if isinstance(self.act, nn.SiLU):
+            # Fuser mappings do not cover SiLU yet; fall back to Conv+BN fusion.
+            torch.ao.quantization.fuse_modules(self, [["conv", "bn"]], inplace=True)
+        else:
+            torch.ao.quantization.fuse_modules(self, [["conv", "bn", "act"]], inplace=True)
 
 
 @register_model("toy_cnn")

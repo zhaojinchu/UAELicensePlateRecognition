@@ -6,7 +6,7 @@ dataset:
   split: "./data/splits/train.txt"
   cache_dir: "./data/processed/cache"
   class_names: ["license_plate"]
-  image_size: [224, 224]
+  image_size: [512, 512]
   letterbox_color: [114, 114, 114]
   normalization:
     mean: [0.485, 0.456, 0.406]
