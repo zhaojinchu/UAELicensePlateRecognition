@@ -10,7 +10,7 @@ dataset:
   label_dir: "labels"
   split_train: "data/splits/train.txt"
   split_val: "data/splits/val.txt"
-  image_size: [224, 224]
+  image_size: [512, 512]
   letterbox_color: [114, 114, 114]
   class_names: ["license_plate"]
   normalization:
