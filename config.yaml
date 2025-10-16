@@ -44,7 +44,7 @@ dataset:
       edge_occlusion_probability: 0.1
 
 model:
-  name: "toy_cnn"  # Replace with your detector model key once registered
+  name: "yolov8n"  # Options: toy_cnn, yolov5n, yolov8n, yolov10n, rtdetr_tiny, pp_picodet_s
   num_classes: 1
 
 training:
