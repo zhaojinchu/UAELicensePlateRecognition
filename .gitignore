@@ -20,3 +20,7 @@ outputs/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Dataset Files
+coco_dataset
+yolov8_dataset

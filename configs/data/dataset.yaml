@@ -1,10 +1,13 @@
 dataset:
   name: "uae_license_plate"
-  root: "./data/raw"
-  annotations: "./data/annotations/train.json"
+  root: "./data/processed/unified"
+  image_dir: "images"
+  label_dir: "labels"
+  split: "./data/splits/train.txt"
   cache_dir: "./data/processed/cache"
+  class_names: ["license_plate"]
   image_size: [224, 224]
-  letterbox: true
+  letterbox_color: [114, 114, 114]
   normalization:
     mean: [0.485, 0.456, 0.406]
     std: [0.229, 0.224, 0.225]
@@ -22,7 +25,6 @@ dataset:
       hsv_h: 5.0
       hsv_s: 0.2
       hsv_v: 0.2
-      color_temperature: 0.05
     degradations:
       motion_blur:
         probability: 0.2
