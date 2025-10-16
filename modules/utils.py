@@ -89,10 +89,9 @@ def get_git_commit(repo_root: Path) -> str:
 def atomic_save(obj: Any, path: Path) -> None:
     """Atomically write serialized tensors/objects to disk."""
     ensure_dir(path.parent)
-    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        torch.save(obj, tmp.name)
-        tmp.flush()
+    with tempfile.NamedTemporaryFile(dir=str(path.parent), delete=False) as tmp:
         tmp_path = Path(tmp.name)
+    torch.save(obj, tmp_path)
     tmp_path.replace(path)
 
 
