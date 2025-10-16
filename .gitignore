@@ -24,3 +24,4 @@ Desktop.ini
 # Dataset Files
 coco_dataset
 yolov8_dataset
+data/processed

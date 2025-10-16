@@ -1,4 +1,4 @@
-# UAE License Plate Detector (Lean Scaffold)
+﻿# UAE License Plate Detector (Lean Scaffold)
 
 This repository provides a minimal-yet-production-minded scaffold for the UAE license plate detector research plan. It keeps the code surface area small while wiring in the core ingredients needed for INT8 deployment: consistent preprocessing, unified loss, AMP + EMA, late-stage QAT, rich metric logging, and checkpoint rotation.
 
@@ -27,30 +27,19 @@ pip install -r requirements.txt
 
 ## Data Preparation
 
-1. Place your COCO and/or YOLO formatted datasets under `data/`.
-2. (Optional) Merge COCO JSON and YOLO TXT labels into a single YOLO-style directory:
-   ```python
-   from pathlib import Path
-   from modules.data import MergeConfig, merge_coco_yolo_datasets
-
-   merge_coco_yolo_datasets(
-       MergeConfig(
-           output_root=Path("data/processed/unified"),
-           coco_annotations=Path("data/annotations/train.json"),
-           coco_images_dir=Path("data/raw/images"),
-           yolo_labels_dir=Path("data/yolo/labels"),
-           yolo_images_dir=Path("data/yolo/images"),
-           overwrite=False,
-       )
-   )
+1. Download and extract the provided `coco_dataset/` and `yolov8_dataset/` folders at the repo root (as supplied).
+2. Run the dataset prep script (no arguments needed; it knows the folder layout):
+   ```bash
+   python process_dataset.py
    ```
+   This moves the raw datasets to `data/raw/{coco_dataset,yolov8_dataset}/` and builds the unified YOLO-format dataset under `data/processed/unified/`.
 3. Define reproducible splits (`data/splits/train.txt`, `data/splits/val.txt`) with one image path per line.
-4. Reserve 200–500 in-distribution images (no augmentations) under `data/calibration/` for PTQ calibration.
+4. Reserve 200-500 in-distribution images (no augmentations) under `data/calibration/` for PTQ calibration.
 
 ## Configuration (`config.yaml`)
 
 - `experiment`: run name, output directory, random seed.
-- `dataset`: unified dataset root, label/image dirs, split files, image size (224×224 letterbox), augmentation knobs.
+- `dataset`: unified dataset root, label/image dirs, split files, image size (224x224 letterbox), augmentation knobs.
 - `model`: detector identifier (`toy_cnn` placeholder—register YOLOv8/YOLOv10/RT-DETR/PP-PicoDet as you integrate them).
 - `training`: epochs, batch size, AdamW hyperparameters, AMP/EMA switches, cosine + warmup schedule, QAT trigger.
 - `loss`: unified detection loss (Sigmoid Focal + CIoU + L1) weights.
@@ -67,14 +56,14 @@ python train.py --config config.yaml
 
 During training:
 
-- Data pipeline performs 224×224 letterbox resize (nearest neighbor), geometric & photometric jitter, motion blur, noise, JPEG compression, cutouts, synthetic rain/fog/shadow stressors.
-- Unified loss combines Sigmoid Focal (γ=2, α=0.25) with CIoU + L1 (λbox=2, λL1=1, λcls=1).
+- Data pipeline performs 224x224 letterbox resize (nearest neighbor), geometric & photometric jitter, motion blur, noise, JPEG compression, cutouts, synthetic rain/fog/shadow stressors.
+- Unified loss combines Sigmoid Focal (gamma=2, alpha=0.25) with CIoU + L1 (lambda_box=2, lambda_L1=1, lambda_cls=1).
 - AMP, EMA, gradient clipping, and cosine LR are enabled; QAT automatically activates for the final 30% of epochs (configurable).
-- Metrics (`metrics.csv`, `metrics.jsonl`) capture the required fields: losses, MAP@0.50/.50:.95, precision/recall/F1, AP/AR small, FPS, grad norms, LR, GPU memory, EMA/AMP/QAT flags, etc.
+- Metrics (`metrics.csv`, `metrics.jsonl`) capture the required fields: losses, MAP@0.50 / 0.50:0.95, precision/recall/F1, AP/AR small, FPS, grad norms, LR, GPU memory, EMA/AMP/QAT flags, etc.
 - Checkpoints are stored under `runs/<timestamp>_<model>_<run>/checkpoints/` with rotation:
   - `last.pth`
   - `best_map5095.pth`
-  - `topk/ckpt_epoch{E:03d}_map5095{AP:.3f}.pth` (top 3 by mAP@0.50:.95)
+  - `topk/ckpt_epoch{E:03d}_map5095{AP:.3f}.pth` (top 3 by mAP@0.50:0.95)
   - Each checkpoint includes model/EMA states, optimizer, scaler, config snapshot, dataset hash, and git commit.
 
 ## INT8 Calibration & Export Stubs
@@ -91,4 +80,4 @@ During training:
 4. Integrate export scripts for ONNX + TensorRT plan files (`best.onnx`, `best_int8.plan`) under each run directory.
 5. Add CI smoke tests (dataset loader, loss forward, one training/validation step) as the project matures.
 
-This scaffold is intentionally compact—every component can be swapped out as the research pipeline solidifies, while keeping the data/quantization/perf expectations from the plan front and center.
+This scaffold is intentionally compact—every component can be swapped out as the research pipeline solidifies, while keeping the data/quantization/performance expectations from the plan front and center.

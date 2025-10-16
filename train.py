@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 import torch
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp.grad_scaler import GradScaler
 from torch.nn.utils import clip_grad_norm_
 from torch.optim import AdamW
 from tqdm import tqdm
@@ -67,19 +67,29 @@ def main() -> None:
     logger.info("Starting run '%s'", run_dir.name)
     save_config(config, run_dir / "config.json")
 
+    device = select_device(args.device)
+    if device.type == "cuda":
+        device_index = device.index if device.index is not None else torch.cuda.current_device()
+        device_desc = f"CUDA:{device_index} ({torch.cuda.get_device_name(device_index)})"
+    else:
+        device_desc = device.type.upper()
+    logger.info("Using device: %s", device_desc)
+
+    pin_memory = device.type == "cuda"
+
     train_loader = create_dataloader(
         dataset_cfg,
         train=True,
         batch_size=training_cfg["batch_size"],
         num_workers=training_cfg.get("num_workers", 4),
-        pin_memory=True,
+        pin_memory=pin_memory,
     )
     val_loader = create_dataloader(
         dataset_cfg,
         train=False,
         batch_size=training_cfg["batch_size"],
         num_workers=training_cfg.get("num_workers", 4),
-        pin_memory=True,
+        pin_memory=pin_memory,
     )
 
     dataset_id = compute_dataset_id(
@@ -88,7 +98,6 @@ def main() -> None:
     )
     class_names = dataset_cfg.get("class_names", ["license_plate"])
 
-    device = select_device(args.device)
     model = build_model(model_cfg).to(device)
 
     num_params = sum(p.numel() for p in model.parameters())
@@ -108,7 +117,7 @@ def main() -> None:
     final_lr_ratio = training_cfg.get("cosine_final_ratio", 0.1)
 
     amp_enabled = bool(training_cfg.get("amp", True) and device.type == "cuda")
-    scaler = GradScaler(enabled=amp_enabled)
+    scaler = torch.amp.GradScaler("cuda") if amp_enabled else None
 
     ema = ModelEMA(model, decay=training_cfg.get("ema_decay", 0.9999)) if training_cfg.get("ema_decay") else None
     ema_on = ema is not None
@@ -164,16 +173,16 @@ def main() -> None:
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
 
-    train_stats = train_epoch(
-        model=model,
-        data_loader=train_loader,
-        optimizer=optimizer,
-        loss_fn=loss_fn,
-        scaler=scaler,
-        device=device,
-        amp_enabled=amp_enabled,
-        grad_clip=training_cfg.get("grad_clip_norm"),
-        ema=ema,
+        train_stats = train_epoch(
+            model=model,
+            data_loader=train_loader,
+            optimizer=optimizer,
+            loss_fn=loss_fn,
+            scaler=scaler,
+            device=device,
+            amp_enabled=amp_enabled,
+            grad_clip=training_cfg.get("grad_clip_norm"),
+            ema=ema,
         )
         global_step += train_stats["steps"]
 
@@ -254,7 +263,7 @@ def main() -> None:
             "model_state_dict": model.state_dict(),
             "ema_state_dict": ema.ema.state_dict() if ema_on else None,
             "optimizer_state_dict": optimizer.state_dict(),
-            "scaler_state_dict": scaler.state_dict() if amp_enabled else None,
+            "scaler_state_dict": scaler.state_dict() if amp_enabled and scaler is not None else None,
             "best_map5095": best_map5095,
             "model_name": model_cfg.get("name"),
             "git_commit": git_commit,
@@ -317,7 +326,7 @@ def train_epoch(
     data_loader: Iterable,
     optimizer: torch.optim.Optimizer,
     loss_fn: UnifiedDetectionLoss,
-    scaler: GradScaler,
+    scaler: GradScaler | None,
     device: torch.device,
     amp_enabled: bool,
     grad_clip: float | None,
@@ -347,13 +356,15 @@ def train_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        with autocast(enabled=amp_enabled and device.type == "cuda"):
+        with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
             outputs = model(images)
             cls_logits, box_preds = normalize_outputs(outputs)
             losses = loss_fn(cls_logits, box_preds, cls_targets, box_targets, positive_mask)
             loss = losses["total"]
 
         if amp_enabled:
+            if scaler is None:
+                raise RuntimeError("AMP is enabled but GradScaler is not initialized.")
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             grad_norm = compute_grad_norm(model.parameters())
@@ -430,7 +441,7 @@ def validate_epoch(
             images = images.to(device, non_blocking=True)
             cls_targets, box_targets, positive_mask = prepare_targets(targets, device)
 
-            with autocast(enabled=amp_enabled and device.type == "cuda"):
+            with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
                 outputs = model(images)
                 cls_logits, box_preds = normalize_outputs(outputs)
                 losses = loss_fn(cls_logits, box_preds, cls_targets, box_targets, positive_mask)

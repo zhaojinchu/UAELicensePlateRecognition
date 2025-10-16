@@ -226,8 +226,7 @@ def prepare_transforms(
                 shear=(-shear, shear),
                 fit_output=False,
                 interpolation=cv2.INTER_NEAREST,
-                mode=cv2.BORDER_CONSTANT,
-                cval=pad_color,
+                fill=pad_color,
                 p=0.7,
             ),
             A.Perspective(scale=(0.0, perspective), interpolation=cv2.INTER_NEAREST, p=0.2),
@@ -236,7 +235,7 @@ def prepare_transforms(
                 min_height=image_size[0],
                 min_width=image_size[1],
                 border_mode=cv2.BORDER_CONSTANT,
-                value=pad_color,
+                fill=pad_color,
             ),
             A.RandomBrightnessContrast(
                 brightness_limit=brightness,
@@ -249,28 +248,55 @@ def prepare_transforms(
                 val_shift_limit=int(hsv_v * 255),
                 p=0.3,
             ),
-            A.ColorTemperature(p=0.2),
+            A.ColorJitter(
+                brightness=0.2,
+                contrast=0.2,
+                saturation=0.2,
+                hue=0.02,
+                p=0.2,
+            ),
             A.MotionBlur(blur_limit=motion_kernel, p=motion_cfg.get("probability", 0.2)),
             A.GaussianBlur(blur_limit=(3, 7), sigma_limit=(0.0, gaussian_sigma), p=0.2),
-            A.GaussNoise(var_limit=(0.0, noise_sigma), p=0.2),
-            A.ImageCompression(quality_lower=jpeg_quality[0], quality_upper=jpeg_quality[1], p=0.3),
-            A.Sharpen(alpha=sharpening, lightness=0.0, p=0.2),
-            A.RandomRain(p=0.1),
-            A.RandomFog(fog_coef_lower=0.1, fog_coef_upper=0.3, p=0.1),
-            A.RandomShadow(p=0.2),
-            A.RandomSunFlare(p=0.1, src_radius=35),
-            A.Cutout(
-                num_holes=cutout_patches,
-                max_h_size=int(cutout_max * image_size[0]),
-                max_w_size=int(cutout_max * image_size[1]),
-                fill_value=pad_color,
+            A.GaussNoise(std_range=(0.0, noise_sigma), mean_range=(0.0, 0.0), p=0.2),
+            A.ImageCompression(quality_range=jpeg_quality, p=0.3),
+            A.Sharpen(alpha=(0.0, sharpening), lightness=(0.0, 0.0), p=0.2),
+            A.RandomRain(
+                slant_range=(-10, 10),
+                drop_length=20,
+                drop_width=1,
+                rain_type="drizzle",
+                p=0.1,
+            ),
+            A.RandomFog(
+                alpha_coef=0.05,
+                fog_coef_range=(0.1, 0.3),
+                p=0.1,
+            ),
+            A.RandomShadow(
+                shadow_roi=(0, 0.4, 1, 1),
+                num_shadows_limit=(1, 2),
+                shadow_dimension=5,
+                shadow_intensity_range=(0.4, 0.6),
+                p=0.2,
+            ),
+            A.RandomSunFlare(
+                flare_roi=(0.0, 0.0, 1.0, 0.5),
+                src_radius=35,
+                num_flare_circles_range=(6, 10),
+                p=0.1,
+            ),
+            A.CoarseDropout(
+                num_holes_range=(1, max(1, cutout_patches)),
+                hole_height_range=(cutout_max / 2.0, cutout_max),
+                hole_width_range=(cutout_max / 2.0, cutout_max),
+                fill=pad_color,
                 p=0.4,
             ),
             A.CoarseDropout(
-                max_holes=2,
-                max_height=int(0.2 * image_size[0]),
-                max_width=int(0.3 * image_size[1]),
-                fill_value=pad_color,
+                num_holes_range=(1, 2),
+                hole_height_range=(0.05, 0.2),
+                hole_width_range=(0.05, 0.3),
+                fill=pad_color,
                 p=edge_occ_prob,
             ),
             A.Normalize(mean=mean, std=std),
@@ -283,7 +309,7 @@ def prepare_transforms(
                 min_height=image_size[0],
                 min_width=image_size[1],
                 border_mode=cv2.BORDER_CONSTANT,
-                value=pad_color,
+                fill=pad_color,
             ),
             A.Normalize(mean=mean, std=std),
             ToTensorV2(),
@@ -367,8 +393,8 @@ class LicensePlateDataset(Dataset):
                 [
                     np.clip(x_c, 0.0, 1.0),
                     np.clip(y_c, 0.0, 1.0),
-                    np.clip(w, 0.0, 1.0),
-                    np.clip(h, 0.0, 1.0),
+                    np.clip(max(w, MIN_BOX_DIM), 0.0, 1.0),
+                    np.clip(max(h, MIN_BOX_DIM), 0.0, 1.0),
                 ]
             )
             labels.append(cls_id)
@@ -435,3 +461,4 @@ def _collate_fn(batch: List[Dict[str, Any]]) -> Tuple[torch.Tensor, List[Dict[st
         target["batch_index"] = idx
         targets.append(target)
     return images, targets
+MIN_BOX_DIM = 1e-6
