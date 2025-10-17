@@ -56,6 +56,7 @@ def main() -> None:
     eval_cfg = config.get("evaluation", {})
     quant_cfg = config.get("quantization", {})
     dataset_cfg = config["dataset"]
+    max_targets_per_image = dataset_cfg.get("max_targets_per_image", 1)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_name = config.get("experiment", {}).get("run_name", "run")
@@ -183,6 +184,7 @@ def main() -> None:
             amp_enabled=amp_enabled,
             grad_clip=training_cfg.get("grad_clip_norm"),
             ema=ema,
+            max_targets=max_targets_per_image,
         )
         global_step += train_stats["steps"]
 
@@ -193,6 +195,7 @@ def main() -> None:
             device=device,
             amp_enabled=amp_enabled,
             ema=ema,
+            max_targets=max_targets_per_image,
         )
 
         metrics = compute_detection_metrics(
@@ -331,6 +334,8 @@ def train_epoch(
     amp_enabled: bool,
     grad_clip: float | None,
     ema: ModelEMA | None,
+    *,
+    max_targets: Optional[int],
 ) -> Dict[str, Any]:
     model.train()
 
@@ -352,13 +357,18 @@ def train_epoch(
         batch_start = time.perf_counter()
 
         images = images.to(device, non_blocking=True)
-        cls_targets, box_targets, positive_mask = prepare_targets(targets, device)
-
         optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
             outputs = model(images)
-            cls_logits, box_preds = normalize_outputs(outputs)
+            cls_logits = outputs["cls_logits"]
+            box_preds = outputs["boxes"]
+            cls_targets, box_targets, positive_mask = prepare_targets(
+                targets,
+                feature_shape=cls_logits.shape,
+                device=device,
+                max_targets=max_targets,
+            )
             losses = loss_fn(cls_logits, box_preds, cls_targets, box_targets, positive_mask)
             loss = losses["total"]
 
@@ -421,6 +431,8 @@ def validate_epoch(
     device: torch.device,
     amp_enabled: bool,
     ema: ModelEMA | None,
+    *,
+    max_targets: Optional[int],
 ) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, torch.Tensor]]]]:
     context = ema.apply_shadow(model) if ema is not None else contextlib.nullcontext()
     predictions: List[Dict[str, torch.Tensor]] = []
@@ -439,11 +451,17 @@ def validate_epoch(
 
         for images, targets in tqdm(data_loader, desc="Validate", leave=False):
             images = images.to(device, non_blocking=True)
-            cls_targets, box_targets, positive_mask = prepare_targets(targets, device)
 
             with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
                 outputs = model(images)
-                cls_logits, box_preds = normalize_outputs(outputs)
+                cls_logits = outputs["cls_logits"]
+                box_preds = outputs["boxes"]
+                cls_targets, box_targets, positive_mask = prepare_targets(
+                    targets,
+                    feature_shape=cls_logits.shape,
+                    device=device,
+                    max_targets=max_targets,
+                )
                 losses = loss_fn(cls_logits, box_preds, cls_targets, box_targets, positive_mask)
 
             total_loss += float(losses["total"].item())
@@ -453,24 +471,23 @@ def validate_epoch(
             total_dfl += float(losses["dfl"].item())
             steps += 1
 
-            scores = torch.sigmoid(cls_logits) if cls_logits.ndim == 1 else torch.sigmoid(cls_logits.max(dim=-1).values)
-            if scores.ndim == 0:
-                scores = scores.unsqueeze(0)
-            if scores.ndim == 1:
-                scores = scores.unsqueeze(-1)
-            box_tensor = box_preds if box_preds.ndim == 2 else box_preds.unsqueeze(0)
+            batch_scores, batch_boxes = flatten_predictions(torch.sigmoid(cls_logits), box_preds)
 
             for idx in range(images.size(0)):
                 predictions.append(
                     {
-                        "scores": scores[idx].detach().cpu().flatten(),
-                        "boxes": box_tensor[idx].detach().cpu().reshape(-1, 4),
+                        "scores": batch_scores[idx].detach().cpu(),
+                        "boxes": batch_boxes[idx].detach().cpu(),
                     }
+                )
+                filtered_boxes, filtered_labels = select_prominent_targets(
+                    targets[idx],
+                    max_targets=max_targets,
                 )
                 targets_list.append(
                     {
-                        "boxes": targets[idx]["boxes"].detach().cpu(),
-                        "labels": targets[idx]["labels"].detach().cpu(),
+                        "boxes": filtered_boxes.detach().cpu(),
+                        "labels": filtered_labels.detach().cpu(),
                     }
                 )
 
@@ -492,41 +509,60 @@ def validate_epoch(
 
 def prepare_targets(
     targets: List[Dict[str, torch.Tensor]],
+    *,
+    feature_shape: torch.Size,
     device: torch.device,
+    max_targets: Optional[int],
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    cls_targets: List[torch.Tensor] = []
-    box_targets: List[torch.Tensor] = []
-    positive_mask: List[bool] = []
+    batch_size, _, height, width = feature_shape
+    cls_targets = torch.zeros((batch_size, height, width), device=device)
+    box_targets = torch.zeros((batch_size, 4, height, width), device=device)
+    positive_mask = torch.zeros((batch_size, height, width), dtype=torch.bool, device=device)
 
-    for target in targets:
-        boxes = target["boxes"].to(device)
-        if boxes.numel() > 0:
-            cls_targets.append(torch.ones(1, device=device))
-            box_targets.append(boxes.mean(dim=0))
-            positive_mask.append(True)
-        else:
-            cls_targets.append(torch.zeros(1, device=device))
-            box_targets.append(torch.zeros(4, device=device))
-            positive_mask.append(False)
+    for batch_index, target in enumerate(targets):
+        boxes_cpu, _ = select_prominent_targets(target, max_targets=max_targets)
+        boxes = boxes_cpu.to(device)
 
-    cls_tensor = torch.stack(cls_targets).view(-1)
-    box_tensor = torch.stack(box_targets)
-    mask_tensor = torch.tensor(positive_mask, dtype=torch.bool, device=device)
-    return cls_tensor, box_tensor, mask_tensor
+        if boxes.numel() == 0:
+            continue
+
+        for box in boxes:
+            cx, cy, w, h = box
+            grid_x = int(torch.clamp(cx * width, 0, width - 1).item())
+            grid_y = int(torch.clamp(cy * height, 0, height - 1).item())
+            cls_targets[batch_index, grid_y, grid_x] = 1.0
+            box_targets[batch_index, :, grid_y, grid_x] = box
+            positive_mask[batch_index, grid_y, grid_x] = True
+
+    return cls_targets, box_targets, positive_mask
 
 
-def normalize_outputs(outputs: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
-    cls_logits = outputs["cls_logits"]
-    boxes = outputs["boxes"]
+def flatten_predictions(
+    scores: torch.Tensor,
+    boxes: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    batch_size = scores.size(0)
+    if scores.ndim == 4:
+        scores = scores.squeeze(1)
+    flat_scores = scores.view(batch_size, -1)
+    flat_boxes = boxes.view(batch_size, 4, -1).permute(0, 2, 1)
+    return flat_scores, flat_boxes
 
-    if cls_logits.ndim == 2 and cls_logits.size(-1) == 1:
-        cls_logits = cls_logits.squeeze(-1)
-    elif cls_logits.ndim > 1:
-        cls_logits = cls_logits.max(dim=-1).values
 
-    if boxes.ndim == 3:
-        boxes = boxes[:, 0, :]
-    return cls_logits, boxes
+def select_prominent_targets(
+    target: Dict[str, torch.Tensor],
+    *,
+    max_targets: Optional[int],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    boxes = target["boxes"]
+    labels = target["labels"]
+    if boxes.numel() == 0 or not max_targets or max_targets <= 0:
+        return boxes, labels
+
+    areas = boxes[:, 2] * boxes[:, 3]
+    k = min(max_targets, boxes.size(0))
+    topk = torch.topk(areas, k=k, largest=True).indices
+    return boxes[topk], labels[topk]
 
 
 def manage_topk_checkpoints(

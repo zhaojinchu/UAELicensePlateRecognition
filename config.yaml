@@ -13,6 +13,7 @@ dataset:
   image_size: [512, 512]
   letterbox_color: [114, 114, 114]
   class_names: ["license_plate"]
+  max_targets_per_image: 1  # Set >1 to train/evaluate on multiple plates per image
   normalization:
     mean: [0.485, 0.456, 0.406]
     std: [0.229, 0.224, 0.225]

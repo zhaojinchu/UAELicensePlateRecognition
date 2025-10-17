@@ -1,9 +1,9 @@
-"""Model registry with QAT-aware detector backbones."""
+"""Model registry with shared dense detection head for multiple backbones."""
 
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any, Callable, Dict, Iterable, List, Sequence
+from typing import Any, Callable, Dict
 
 import torch
 from torch import nn
@@ -50,8 +50,6 @@ class ConvBNAct(nn.Sequential):
     ) -> None:
         padding = kernel_size // 2
         act_module = activation if activation is not None else nn.SiLU(inplace=True)
-        if activation is None:
-            act_module = nn.SiLU(inplace=True)
         modules = OrderedDict(
             [
                 (
@@ -67,7 +65,7 @@ class ConvBNAct(nn.Sequential):
                     ),
                 ),
                 ("bn", nn.BatchNorm2d(out_channels)),
-                ("act", act_module if act_module is not None else nn.Identity()),
+                ("act", act_module),
             ]
         )
         super().__init__(modules)
@@ -219,46 +217,65 @@ class DepthwiseSeparableConv(nn.Module):
         self.pw.fuse_model()
 
 
+class DenseDetectionHead(nn.Module):
+    """Lightweight per-location detection head shared across backbones."""
+
+    def __init__(self, in_channels: int, num_classes: int, hidden_channels: int = 128) -> None:
+        super().__init__()
+        self.cls_branch = nn.Sequential(
+            ConvBNAct(in_channels, hidden_channels, 3),
+            nn.Conv2d(hidden_channels, num_classes, kernel_size=1),
+        )
+        self.box_branch = nn.Sequential(
+            ConvBNAct(in_channels, hidden_channels, 3),
+            nn.Conv2d(hidden_channels, 4, kernel_size=1),
+        )
+        for module in self.cls_branch.modules():
+            if isinstance(module, nn.Conv2d) and module.out_channels == num_classes:
+                nn.init.constant_(module.bias, -4.595)  # start near zero confidence
+
+    def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        cls_logits = self.cls_branch(features)
+        box_raw = self.box_branch(features)
+        return cls_logits, box_raw
+
+    def fuse_model(self) -> None:
+        for module in self.cls_branch:
+            if hasattr(module, "fuse_model"):
+                module.fuse_model()
+        for module in self.box_branch:
+            if hasattr(module, "fuse_model"):
+                module.fuse_model()
+
+
 class BaseDetector(nn.Module):
-    """Common scaffolding for detector backbones."""
+    """Common scaffolding for detector backbones with shared dense head."""
 
     def __init__(self, num_classes: int, feature_dim: int) -> None:
         super().__init__()
         self.num_classes = num_classes
-        self.feature_dim = feature_dim
         self.quant = QuantStub()
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.dequant = DeQuantStub()
-        self.cls_head = nn.Linear(feature_dim, num_classes)
-        self.box_head = nn.Linear(feature_dim, 4)
+        self.cls_dequant = DeQuantStub()
+        self.box_dequant = DeQuantStub()
+        self.head = DenseDetectionHead(feature_dim, num_classes)
 
     def encode(self, images: torch.Tensor) -> torch.Tensor:
-        """Return backbone features (to be provided by subclasses)."""
+        """Return backbone feature map (to be provided by subclasses)."""
         raise NotImplementedError
-
-    def project_features(self, features: torch.Tensor) -> torch.Tensor:
-        """Convert backbone output to a flat embedding."""
-        if features.ndim == 4:
-            features = self.pool(features).flatten(1)
-        elif features.ndim == 3:
-            features = features.mean(dim=1)
-        return features
 
     def forward(self, images: torch.Tensor) -> Dict[str, torch.Tensor]:
         x = self.quant(images)
         features = self.encode(x)
-        embedding = self.project_features(features)
-        embedding = self.dequant(embedding)
-
-        cls_logits = self.cls_head(embedding)
-        if self.num_classes == 1 and cls_logits.ndim == 2:
-            cls_logits = cls_logits.squeeze(-1)
-        boxes = torch.sigmoid(self.box_head(embedding))
+        cls_logits, box_raw = self.head(features)
+        cls_logits = self.cls_dequant(cls_logits)
+        box_raw = self.box_dequant(box_raw)
+        boxes = torch.sigmoid(box_raw)
         return {"cls_logits": cls_logits, "boxes": boxes}
 
     def fuse_model(self) -> None:  # pragma: no cover - to be overridden
         """Fuse Conv+BN(+Act) where applicable (implemented by subclasses)."""
-        return
+        if hasattr(self.head, "fuse_model"):
+            self.head.fuse_model()
 
 
 class ToyDetector(BaseDetector):
@@ -283,6 +300,7 @@ class ToyDetector(BaseDetector):
         self.block1.fuse_model()
         self.block2.fuse_model()
         self.block3.fuse_model()
+        super().fuse_model()
 
 
 class YOLOv8Nano(BaseDetector):
@@ -316,6 +334,8 @@ class YOLOv8Nano(BaseDetector):
         self.down2.fuse_model()
         self.stage3.fuse_model()
         self.sppf.fuse_model()
+        super().fuse_model()
+        super().fuse_model()
 
 
 class YOLOv5Nano(BaseDetector):
@@ -349,6 +369,7 @@ class YOLOv5Nano(BaseDetector):
         self.down2.fuse_model()
         self.stage3.fuse_model()
         self.sppf.fuse_model()
+        super().fuse_model()
 
 
 class YOLOv10Nano(BaseDetector):
@@ -389,6 +410,7 @@ class YOLOv10Nano(BaseDetector):
         self.stage3.fuse_model()
         self.context.fuse_model()
         # self.attn contains pooling/conv only; nothing to fuse.
+        super().fuse_model()
 
 
 class RTDETRTiny(BaseDetector):
@@ -419,16 +441,14 @@ class RTDETRTiny(BaseDetector):
         tokens = x.permute(0, 2, 3, 1).reshape(n, h * w, c)
         encoded = self.encoder(tokens)
         encoded = self.norm(encoded)
-        return encoded
-
-    def project_features(self, features: torch.Tensor) -> torch.Tensor:
-        return features.mean(dim=1)
+        return encoded.view(n, h, w, c).permute(0, 3, 1, 2)
 
     def fuse_model(self) -> None:
         for module in self.patch_embed:
             if hasattr(module, "fuse_model"):
                 module.fuse_model()
         # Transformer layers are not fused.
+        super().fuse_model()
 
 
 class PPPicoDetS(BaseDetector):
@@ -455,6 +475,7 @@ class PPPicoDetS(BaseDetector):
     def fuse_model(self) -> None:
         for stage in self.stages:
             stage.fuse_model()
+        super().fuse_model()
 
 
 def _build_model_helper(cfg: Dict[str, Any], key: str, cls: Callable[[int], nn.Module]) -> nn.Module:

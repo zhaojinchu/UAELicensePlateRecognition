@@ -41,16 +41,16 @@ class UnifiedDetectionLoss:
     ) -> Dict[str, torch.Tensor]:
         # Classification/objectness loss with sigmoid focal.
         cls_loss = sigmoid_focal_loss(
-            cls_logits,
-            cls_targets,
+            cls_logits.view(-1),
+            cls_targets.view(-1),
             alpha=self.cfg.focal_alpha,
             gamma=self.cfg.focal_gamma,
             reduction="mean",
         )
 
         if positive_mask.any():
-            pos_preds = box_preds[positive_mask]
-            pos_targets = box_targets[positive_mask]
+            pos_preds = box_preds.permute(0, 2, 3, 1)[positive_mask]
+            pos_targets = box_targets.permute(0, 2, 3, 1)[positive_mask]
             iou_loss = ciou_loss(pos_preds, pos_targets).mean()
             l1_loss = F.l1_loss(pos_preds, pos_targets, reduction="mean")
         else:

@@ -104,15 +104,12 @@ def gather_image_paths(image_dir: Path, split_file: Path | None) -> List[Path]:
 def normalize_outputs(outputs: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
     cls_logits = outputs["cls_logits"]
     boxes = outputs["boxes"]
-
-    if cls_logits.ndim == 2 and cls_logits.size(-1) == 1:
-        cls_logits = cls_logits.squeeze(-1)
-    elif cls_logits.ndim > 1:
-        cls_logits = cls_logits.max(dim=-1).values
-
-    if boxes.ndim == 3:
-        boxes = boxes[:, 0, :]
-    return cls_logits, boxes
+    scores = torch.sigmoid(cls_logits)
+    if scores.ndim == 4:
+        scores = scores.squeeze(1)
+    flat_scores = scores.view(scores.size(0), -1)
+    flat_boxes = boxes.view(boxes.size(0), 4, -1).permute(0, 2, 1)
+    return flat_scores, flat_boxes
 
 
 def yolo_to_xyxy(boxes: torch.Tensor, width: int, height: int) -> torch.Tensor:
@@ -212,35 +209,28 @@ def main() -> None:
     image_tensor = sample["image"]
     target = sample["target"]
     gt_boxes = target["boxes"]
+    max_targets = dataset_cfg.get("max_targets_per_image", 1)
+    if max_targets and max_targets > 0 and gt_boxes.numel() > 0:
+        areas = gt_boxes[:, 2] * gt_boxes[:, 3]
+        topk = torch.topk(areas, k=min(max_targets, gt_boxes.size(0))).indices
+        gt_boxes = gt_boxes[topk]
 
     input_tensor = image_tensor.unsqueeze(0).to(device)
     with torch.no_grad():
         outputs = model(input_tensor)
-    cls_logits, box_preds = normalize_outputs(outputs)
+    score_map, box_map = normalize_outputs(outputs)
 
-    if cls_logits.ndim == 0:
-        scores = torch.sigmoid(cls_logits).view(1)
-    else:
-        scores = torch.sigmoid(cls_logits).flatten()
-
-    if box_preds.ndim == 1:
-        box_preds = box_preds.unsqueeze(0)
-    elif box_preds.ndim == 2 and box_preds.size(0) == 1 and box_preds.size(1) == 4:
-        box_preds = box_preds.reshape(1, 4)
-    else:
-        box_preds = box_preds.reshape(-1, 4)
-
-    if scores.numel() != box_preds.size(0):
-        if scores.numel() == 1:
-            scores = scores.expand(box_preds.size(0))
-        else:
-            count = min(scores.numel(), box_preds.size(0))
-            scores = scores[:count]
-            box_preds = box_preds[:count]
+    scores = score_map[0]
+    boxes = box_map[0]
 
     keep = scores >= args.score_threshold
-    pred_boxes = box_preds[keep]
     pred_scores = scores[keep]
+    pred_boxes = boxes[keep]
+
+    if pred_scores.numel() > 0:
+        order = torch.argsort(pred_scores, descending=True)
+        pred_scores = pred_scores[order]
+        pred_boxes = pred_boxes[order]
 
     height, width = image_tensor.shape[1:]
     mean = dataset_cfg.get("normalization", {}).get("mean", [0.485, 0.456, 0.406])
