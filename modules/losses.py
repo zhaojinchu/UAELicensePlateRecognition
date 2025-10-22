@@ -38,6 +38,7 @@ class UnifiedDetectionLoss:
         cls_targets: torch.Tensor,
         box_targets: torch.Tensor,
         positive_mask: torch.Tensor,
+        positive_weights: torch.Tensor | None = None,
     ) -> Dict[str, torch.Tensor]:
         # Classification/objectness loss with sigmoid focal.
         cls_loss = sigmoid_focal_loss(
@@ -51,8 +52,17 @@ class UnifiedDetectionLoss:
         if positive_mask.any():
             pos_preds = box_preds.permute(0, 2, 3, 1)[positive_mask]
             pos_targets = box_targets.permute(0, 2, 3, 1)[positive_mask]
-            iou_loss = ciou_loss(pos_preds, pos_targets).mean()
-            l1_loss = F.l1_loss(pos_preds, pos_targets, reduction="mean")
+            iou_values = ciou_loss(pos_preds, pos_targets)
+            l1_values = F.l1_loss(pos_preds, pos_targets, reduction="none").mean(dim=-1)
+
+            if positive_weights is not None:
+                weights = positive_weights[positive_mask].clamp_min(1e-6)
+                weight_sum = weights.sum().clamp_min(1e-6)
+                iou_loss = (iou_values * weights).sum() / weight_sum
+                l1_loss = (l1_values * weights).sum() / weight_sum
+            else:
+                iou_loss = iou_values.mean()
+                l1_loss = l1_values.mean()
         else:
             iou_loss = cls_loss.new_zeros(())
             l1_loss = cls_loss.new_zeros(())

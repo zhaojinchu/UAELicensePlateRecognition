@@ -363,13 +363,20 @@ def train_epoch(
             outputs = model(images)
             cls_logits = outputs["cls_logits"]
             box_preds = outputs["boxes"]
-            cls_targets, box_targets, positive_mask = prepare_targets(
+            cls_targets, box_targets, positive_mask, pos_weights = prepare_targets(
                 targets,
                 feature_shape=cls_logits.shape,
                 device=device,
                 max_targets=max_targets,
             )
-            losses = loss_fn(cls_logits, box_preds, cls_targets, box_targets, positive_mask)
+            losses = loss_fn(
+                cls_logits,
+                box_preds,
+                cls_targets,
+                box_targets,
+                positive_mask,
+                pos_weights,
+            )
             loss = losses["total"]
 
         if amp_enabled:
@@ -456,13 +463,20 @@ def validate_epoch(
                 outputs = model(images)
                 cls_logits = outputs["cls_logits"]
                 box_preds = outputs["boxes"]
-                cls_targets, box_targets, positive_mask = prepare_targets(
+                cls_targets, box_targets, positive_mask, pos_weights = prepare_targets(
                     targets,
                     feature_shape=cls_logits.shape,
                     device=device,
                     max_targets=max_targets,
                 )
-                losses = loss_fn(cls_logits, box_preds, cls_targets, box_targets, positive_mask)
+                losses = loss_fn(
+                    cls_logits,
+                    box_preds,
+                    cls_targets,
+                    box_targets,
+                    positive_mask,
+                    pos_weights,
+                )
 
             total_loss += float(losses["total"].item())
             total_cls += float(losses["cls"].item())
@@ -513,11 +527,12 @@ def prepare_targets(
     feature_shape: torch.Size,
     device: torch.device,
     max_targets: Optional[int],
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     batch_size, _, height, width = feature_shape
     cls_targets = torch.zeros((batch_size, height, width), device=device)
     box_targets = torch.zeros((batch_size, 4, height, width), device=device)
     positive_mask = torch.zeros((batch_size, height, width), dtype=torch.bool, device=device)
+    positive_weights = torch.zeros((batch_size, height, width), device=device)
 
     for batch_index, target in enumerate(targets):
         boxes_cpu, _ = select_prominent_targets(target, max_targets=max_targets)
@@ -528,13 +543,38 @@ def prepare_targets(
 
         for box in boxes:
             cx, cy, w, h = box
-            grid_x = int(torch.clamp(cx * width, 0, width - 1).item())
-            grid_y = int(torch.clamp(cy * height, 0, height - 1).item())
-            cls_targets[batch_index, grid_y, grid_x] = 1.0
-            box_targets[batch_index, :, grid_y, grid_x] = box
-            positive_mask[batch_index, grid_y, grid_x] = True
+            base_x = int(torch.clamp(cx * width, 0, width - 1).item())
+            base_y = int(torch.clamp(cy * height, 0, height - 1).item())
 
-    return cls_targets, box_targets, positive_mask
+            radius_x = max(1, int(round(float(w.item() * width * 0.25))))
+            radius_y = max(1, int(round(float(h.item() * height * 0.25))))
+            radius = max(radius_x, radius_y)
+            radius = min(radius, 4)
+            sigma = max(radius / 2.0, 1.0)
+            sigma_sq = sigma * sigma
+
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    grid_x = base_x + dx
+                    grid_y = base_y + dy
+                    if grid_x < 0 or grid_x >= width or grid_y < 0 or grid_y >= height:
+                        continue
+
+                    dist_sq = float(dx * dx + dy * dy)
+                    weight = math.exp(-dist_sq / (2.0 * sigma_sq))
+                    if weight < 0.15:
+                        continue
+
+                    current = cls_targets[batch_index, grid_y, grid_x]
+                    cls_targets[batch_index, grid_y, grid_x] = max(current, weight)
+                    box_targets[batch_index, :, grid_y, grid_x] = box
+                    positive_mask[batch_index, grid_y, grid_x] = True
+                    positive_weights[batch_index, grid_y, grid_x] = max(
+                        positive_weights[batch_index, grid_y, grid_x],
+                        weight,
+                    )
+
+    return cls_targets, box_targets, positive_mask, positive_weights
 
 
 def flatten_predictions(

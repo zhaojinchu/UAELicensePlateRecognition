@@ -217,17 +217,30 @@ class DepthwiseSeparableConv(nn.Module):
         self.pw.fuse_model()
 
 
+def _append_coord_channels(features: torch.Tensor) -> torch.Tensor:
+    """Concatenate normalized XY coordinate maps to feature tensor."""
+    batch, _, height, width = features.shape
+    device = features.device
+    dtype = features.dtype
+    y_coords = torch.linspace(0.0, 1.0, steps=height, device=device, dtype=dtype)
+    x_coords = torch.linspace(0.0, 1.0, steps=width, device=device, dtype=dtype)
+    y_grid = y_coords.view(1, 1, height, 1).expand(batch, 1, height, width)
+    x_grid = x_coords.view(1, 1, 1, width).expand(batch, 1, height, width)
+    return torch.cat((features, x_grid, y_grid), dim=1)
+
+
 class DenseDetectionHead(nn.Module):
     """Lightweight per-location detection head shared across backbones."""
 
     def __init__(self, in_channels: int, num_classes: int, hidden_channels: int = 128) -> None:
         super().__init__()
+        coord_channels = in_channels + 2
         self.cls_branch = nn.Sequential(
-            ConvBNAct(in_channels, hidden_channels, 3),
+            ConvBNAct(coord_channels, hidden_channels, 3),
             nn.Conv2d(hidden_channels, num_classes, kernel_size=1),
         )
         self.box_branch = nn.Sequential(
-            ConvBNAct(in_channels, hidden_channels, 3),
+            ConvBNAct(coord_channels, hidden_channels, 3),
             nn.Conv2d(hidden_channels, 4, kernel_size=1),
         )
         for module in self.cls_branch.modules():
@@ -235,8 +248,9 @@ class DenseDetectionHead(nn.Module):
                 nn.init.constant_(module.bias, -4.595)  # start near zero confidence
 
     def forward(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        cls_logits = self.cls_branch(features)
-        box_raw = self.box_branch(features)
+        enriched = _append_coord_channels(features)
+        cls_logits = self.cls_branch(enriched)
+        box_raw = self.box_branch(enriched)
         return cls_logits, box_raw
 
     def fuse_model(self) -> None:
