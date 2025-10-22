@@ -18,14 +18,23 @@ def prepare_qat(model: torch.nn.Module, cfg: Dict[str, Any]) -> torch.nn.Module:
 
     backend = cfg.get("backend", "fbgemm")
     torch.backends.quantized.engine = backend
-    model.train()
+    was_training = model.training
+
+    # Module fusion requires evaluation mode to freeze BatchNorm statistics.
+    model.eval()
 
     if hasattr(model, "fuse_model"):
         model.fuse_model()
 
     qconfig = torch.ao.quantization.get_default_qat_qconfig(backend)
     model.qconfig = qconfig
+
+    # Switch back to training for QAT preparation so observers/fake-quant modules are active.
+    model.train()
     torch.ao.quantization.prepare_qat(model, inplace=True)
+
+    if not was_training:
+        model.eval()
     return model
 
 
