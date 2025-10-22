@@ -41,13 +41,33 @@ class UnifiedDetectionLoss:
         positive_weights: torch.Tensor | None = None,
     ) -> Dict[str, torch.Tensor]:
         # Classification/objectness loss with sigmoid focal.
-        cls_loss = sigmoid_focal_loss(
-            cls_logits.view(-1),
-            cls_targets.view(-1),
+        cls_logits = cls_logits.squeeze(1) if cls_logits.dim() == 4 and cls_logits.size(1) == 1 else cls_logits
+        raw_targets = cls_targets
+        if raw_targets.shape != cls_logits.shape:
+            raw_targets = raw_targets.view_as(cls_logits)
+
+        positive_mask = (raw_targets > 0.0) if positive_mask is None else positive_mask
+        weight_map = positive_weights if positive_weights is not None else raw_targets
+        weight_map = weight_map.view_as(cls_logits)
+
+        focal_targets = positive_mask.to(cls_logits.dtype)
+        focal_loss_map = sigmoid_focal_loss(
+            cls_logits,
+            focal_targets,
             alpha=self.cfg.focal_alpha,
             gamma=self.cfg.focal_gamma,
-            reduction="mean",
+            reduction="none",
         )
+
+        pos_weights = weight_map * focal_targets
+        pos_count = pos_weights.sum().clamp(min=1.0)
+        pos_loss = (focal_loss_map * pos_weights).sum() / pos_count
+
+        neg_mask = (~positive_mask).to(cls_logits.dtype)
+        neg_count = neg_mask.sum().clamp(min=1.0)
+        neg_loss = (focal_loss_map * neg_mask).sum() / neg_count
+
+        cls_loss = pos_loss + neg_loss
 
         if positive_mask.any():
             pos_preds = box_preds.permute(0, 2, 3, 1)[positive_mask]
