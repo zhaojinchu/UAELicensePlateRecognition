@@ -12,7 +12,7 @@ import matplotlib.patches as patches
 import numpy as np
 import torch
 
-from modules import build_model, ensure_dir, load_yaml
+from modules import build_model, ensure_dir, load_yaml, suppress_dense_predictions
 from modules.data import LicensePlateDataset, prepare_transforms, resolve_dataset_paths
 
 
@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.25,
         help="Minimum confidence required to draw a predicted box.",
+    )
+    parser.add_argument(
+        "--nms-iou-threshold",
+        type=float,
+        default=None,
+        help="IoU threshold used during NMS suppression (defaults to config value).",
     )
     parser.add_argument(
         "--device",
@@ -182,6 +188,7 @@ def main() -> None:
 
     config = load_yaml(args.config)
     dataset_cfg = config["dataset"]
+    eval_cfg = config.get("evaluation", {})
     model_cfg = config["model"]
 
     device = select_device(args.device)
@@ -222,15 +229,21 @@ def main() -> None:
 
     scores = score_map[0]
     boxes = box_map[0]
-
-    keep = scores >= args.score_threshold
-    pred_scores = scores[keep]
-    pred_boxes = boxes[keep]
-
-    if pred_scores.numel() > 0:
-        order = torch.argsort(pred_scores, descending=True)
-        pred_scores = pred_scores[order]
-        pred_boxes = pred_boxes[order]
+    max_preds = max_targets if max_targets and max_targets > 0 else None
+    nms_iou = (
+        args.nms_iou_threshold
+        if args.nms_iou_threshold is not None
+        else eval_cfg.get("nms_iou_threshold", 0.5)
+    )
+    pred_scores, pred_boxes = suppress_dense_predictions(
+        scores=scores,
+        boxes=boxes,
+        score_threshold=args.score_threshold,
+        iou_threshold=nms_iou,
+        max_detections=max_preds,
+    )
+    pred_scores = pred_scores.detach().cpu()
+    pred_boxes = pred_boxes.detach().cpu()
 
     height, width = image_tensor.shape[1:]
     mean = dataset_cfg.get("normalization", {}).get("mean", [0.485, 0.456, 0.406])
@@ -247,8 +260,8 @@ def main() -> None:
         draw_boxes(ax, gt_xyxy, color="#00FF00", label="GT")
 
     if pred_boxes.numel() > 0:
-        pred_xyxy = yolo_to_xyxy(pred_boxes.cpu(), width, height).cpu().numpy()
-        draw_boxes(ax, pred_xyxy, color="#FF4C4C", label="Pred", scores=pred_scores.cpu().tolist())
+        pred_xyxy = yolo_to_xyxy(pred_boxes, width, height).cpu().numpy()
+        draw_boxes(ax, pred_xyxy, color="#FF4C4C", label="Pred", scores=pred_scores.tolist())
 
     if args.output:
         ensure_dir(args.output.parent)

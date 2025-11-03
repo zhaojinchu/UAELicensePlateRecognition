@@ -8,7 +8,7 @@ import math
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
 from torch.amp.grad_scaler import GradScaler
@@ -30,6 +30,7 @@ from modules import (
     ensure_dir,
     get_git_commit,
     load_yaml,
+    suppress_dense_predictions,
     save_config,
     set_seed,
 )
@@ -196,6 +197,8 @@ def main() -> None:
             amp_enabled=amp_enabled,
             ema=ema,
             max_targets=max_targets_per_image,
+            score_threshold=eval_cfg.get("score_threshold", 0.25),
+            nms_iou_threshold=eval_cfg.get("nms_iou_threshold", 0.5),
         )
 
         metrics = compute_detection_metrics(
@@ -440,6 +443,8 @@ def validate_epoch(
     ema: ModelEMA | None,
     *,
     max_targets: Optional[int],
+    score_threshold: float,
+    nms_iou_threshold: float,
 ) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, torch.Tensor]]]]:
     context = ema.apply_shadow(model) if ema is not None else contextlib.nullcontext()
     predictions: List[Dict[str, torch.Tensor]] = []
@@ -488,10 +493,18 @@ def validate_epoch(
             batch_scores, batch_boxes = flatten_predictions(torch.sigmoid(cls_logits), box_preds)
 
             for idx in range(images.size(0)):
+                max_preds = max_targets if max_targets and max_targets > 0 else None
+                filtered_scores, filtered_boxes = suppress_dense_predictions(
+                    scores=batch_scores[idx],
+                    boxes=batch_boxes[idx],
+                    score_threshold=score_threshold,
+                    iou_threshold=nms_iou_threshold,
+                    max_detections=max_preds,
+                )
                 predictions.append(
                     {
-                        "scores": batch_scores[idx].detach().cpu(),
-                        "boxes": batch_boxes[idx].detach().cpu(),
+                        "scores": filtered_scores.detach().cpu(),
+                        "boxes": filtered_boxes.detach().cpu(),
                     }
                 )
                 filtered_boxes, filtered_labels = select_prominent_targets(

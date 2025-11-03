@@ -10,6 +10,7 @@ from .data import (
 from .losses import UnifiedDetectionLoss
 from .metrics import DetectionMetricsLogger, compute_detection_metrics
 from .modeling import build_model
+from .postprocess import suppress_dense_predictions
 from .quantization import calibrate_int8, prepare_qat
 from .utils import (
     AverageMeter,
@@ -32,6 +33,7 @@ __all__ = [
     "resolve_dataset_paths",
     "create_dataloader",
     "build_model",
+    "suppress_dense_predictions",
     "prepare_qat",
     "calibrate_int8",
     "UnifiedDetectionLoss",
